@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from deltamap import airports
 from deltamap.cache import Store, explore_key
-from deltamap.config import REGION_BY_ID, REGIONS, ROOT, load_settings
+from deltamap.config import AIRLINES, REGION_BY_ID, REGIONS, ROOT, load_settings, search_areas
 from deltamap.providers import DemoProvider, ProviderError, SerpApiProvider
 
 log = logging.getLogger("deltamap")
@@ -87,12 +87,19 @@ def _tokhash(t: str) -> str:
     return hashlib.sha256(t.encode()).hexdigest()[:20]
 
 
-def _explore_key(origin, depart, ret, region_id) -> str:
-    return explore_key(_p(), settings.airline_filter, origin, depart, ret, region_id)
+def _airlines(a: str | None) -> str:
+    a = (a or settings.airline_filter).upper()
+    if a not in AIRLINES:
+        raise HTTPException(400, f"Unknown airline network: {a}")
+    return a
 
 
-def _main_key(origin, dest, depart, ret) -> str:
-    return f"{_p()}|{settings.airline_filter}|{origin}|{dest}|{depart}|{ret}"
+def _explore_key(origin, depart, ret, area_id, airlines) -> str:
+    return explore_key(_p(), airlines, origin, depart, ret, area_id)
+
+
+def _main_key(origin, dest, depart, ret, airlines) -> str:
+    return f"{_p()}|{airlines}|{origin}|{dest}|{depart}|{ret}"
 
 
 def _regions(regions: str | None):
@@ -102,6 +109,11 @@ def _regions(regions: str | None):
     if not picked:
         raise HTTPException(400, "No known regions selected")
     return picked
+
+
+def _jobs(regs, deep: bool):
+    """(region, area) pairs: one Explore call each."""
+    return [(r, a) for r in regs for a in search_areas(r, deep)]
 
 
 def _domestic(origin: str, dest: str) -> bool:
@@ -145,12 +157,16 @@ async def guard(live_calls: int, confirm: bool) -> dict | None:
     if left is not None and left < settings.low_quota_warn and not confirm:
         return {"confirm_needed": True, "left": left, "calls": live_calls,
                 "message": f"{left} searches left this month. This uses {live_calls}. Continue?"}
+    if live_calls > settings.big_search_warn and not confirm:
+        return {"confirm_needed": True, "left": left, "calls": live_calls,
+                "message": f"This search uses {live_calls} searches"
+                           + (f" ({left} left this month)" if left is not None else "") + ". Continue?"}
     return None
 
 
-def _apply_main(origin, depart, ret, dests: list[dict]) -> list[dict]:
+def _apply_main(origin, depart, ret, airlines, dests: list[dict]) -> list[dict]:
     for d in dests:
-        known, price = store.main_fare(_main_key(origin, d["code"], depart, ret), settings.map_ttl)
+        known, price = store.main_fare(_main_key(origin, d["code"], depart, ret, airlines), settings.map_ttl)
         if known and price is not None:
             d["explore_price"] = d["price"]
             d["price"] = price
@@ -171,8 +187,10 @@ async def config():
         "key_problem": S.key_problem,
         "default_origin": settings.default_origin,
         "airline_filter": settings.airline_filter,
-        "regions": [{"id": r.id, "name": r.name} for r in REGIONS],
+        "airlines": [{"id": k, "name": v} for k, v in AIRLINES.items()],
+        "regions": [{"id": r.id, "name": r.name, "deep": [a.name for a in r.deep]} for r in REGIONS],
         "low_quota_warn": settings.low_quota_warn,
+        "big_search_warn": settings.big_search_warn,
     }
 
 
@@ -196,51 +214,52 @@ async def quota_ep(refresh: bool = False):
 
 
 @app.get("/api/estimate")
-async def estimate(origin: str, depart: str, ret: str, regions: str | None = None):
-    origin = _airport(origin)
+async def estimate(origin: str, depart: str, ret: str, regions: str | None = None, deep: bool = False,
+                   airlines: str | None = None):
+    origin, airlines = _airport(origin), _airlines(airlines)
     _dates(depart, ret)
-    regs = _regions(regions)
-    cached = [r.id for r in regs if store.has(_explore_key(origin, depart, ret, r.id))]
-    live = sum(S.provider.calls_for_explore(r) for r in regs if r.id not in cached)
-    return {"live_calls": live, "cached_regions": cached,
+    jobs = _jobs(_regions(regions), deep)
+    cached = [a.id for _, a in jobs if store.has(_explore_key(origin, depart, ret, a.id, airlines))]
+    live = len(jobs) - len(cached)
+    return {"live_calls": live, "jobs": len(jobs), "cached_areas": cached,
             "guard": await guard(live, confirm=False), "provider": _p()}
 
 
 @app.get("/api/explore")
-async def explore(origin: str, depart: str, ret: str, regions: str | None = None, confirm: bool = False):
-    origin = _airport(origin)
+async def explore(origin: str, depart: str, ret: str, regions: str | None = None, deep: bool = False,
+                  airlines: str | None = None, confirm: bool = False):
+    origin, airlines = _airport(origin), _airlines(airlines)
     _dates(depart, ret)
-    regs = _regions(regions)
-    todo = [r for r in regs if not store.has(_explore_key(origin, depart, ret, r.id))]
-    live = sum(S.provider.calls_for_explore(r) for r in todo)
+    jobs = _jobs(_regions(regions), deep)
+    live = sum(1 for _, a in jobs if not store.has(_explore_key(origin, depart, ret, a.id, airlines)))
     block = await guard(live, confirm)
 
-    async def run_region(region):
-        key = _explore_key(origin, depart, ret, region.id)
+    async def run_area(region, area):
+        key = _explore_key(origin, depart, ret, area.id, airlines)
+        base = {"region": region.id, "area": area.id, "area_name": area.name}
         cached = store.get(key)
         if cached is not None:
-            return {"region": region.id, "destinations": _apply_main(origin, depart, ret, cached),
+            return {**base, "destinations": _apply_main(origin, depart, ret, airlines, cached),
                     "cached": True, "calls": 0}
         if block:
-            return {"region": region.id, "destinations": [], "cached": False, "calls": 0,
+            return {**base, "destinations": [], "cached": False, "calls": 0,
                     "error": block["message"], "blocked": True}
-        n = S.provider.calls_for_explore(region)
         try:
-            dests = await S.provider.explore(origin, depart, ret, region)
+            dests = await S.provider.explore(origin, depart, ret, area, region.id, airlines)
         except ProviderError as e:
-            return {"region": region.id, "destinations": [], "cached": False, "calls": n, "error": str(e)}
+            return {**base, "destinations": [], "cached": False, "calls": 1, "error": str(e)}
         finally:
-            _spent(n if _p() != "demo" else 0)
+            _spent(1 if _p() != "demo" else 0)
         store.put(key, dests, settings.map_ttl)
-        return {"region": region.id, "destinations": _apply_main(origin, depart, ret, dests),
-                "cached": False, "calls": n}
+        return {**base, "destinations": _apply_main(origin, depart, ret, airlines, dests),
+                "cached": False, "calls": 1}
 
     async def stream():
         if block and block.get("confirm_needed"):
             yield f"event: confirm\ndata: {json.dumps(block)}\n\n"
             return
-        yield f"event: start\ndata: {json.dumps({'regions': len(regs), 'live_calls': 0 if block else live})}\n\n"
-        for fut in asyncio.as_completed([run_region(r) for r in regs]):
+        yield f"event: start\ndata: {json.dumps({'areas': len(jobs), 'live_calls': 0 if block else live})}\n\n"
+        for fut in asyncio.as_completed([run_area(r, a) for r, a in jobs]):
             res = await fut
             yield f"event: region\ndata: {json.dumps(res)}\n\n"
         yield f"event: done\ndata: {json.dumps(await quota())}\n\n"
@@ -257,10 +276,11 @@ def _coords_for(itins: list[dict], extra: list[str]) -> dict:
     return {c: airports.coords(c) for c in codes if c and airports.coords(c)}
 
 
-def _gf_url(origin, dest, depart, ret) -> str:
+def _gf_url(origin, dest, depart, ret, airlines) -> str:
     from urllib.parse import quote
+    on = "Delta" if airlines == "DL" else "SkyTeam"
     return ("https://www.google.com/travel/flights?q="
-            + quote(f"Flights from {origin} to {dest} on {depart} through {ret} on Delta"))
+            + quote(f"Flights from {origin} to {dest} on {depart} through {ret} on {on}"))
 
 
 async def _cached_call(key, ttl, confirm, fn):
@@ -283,21 +303,22 @@ async def _cached_call(key, ttl, confirm, fn):
 
 
 @app.get("/api/flights")
-async def flights(origin: str, dest: str, depart: str, ret: str, confirm: bool = False):
-    origin, dest = _airport(origin), _airport(dest)
+async def flights(origin: str, dest: str, depart: str, ret: str, airlines: str | None = None,
+                  confirm: bool = False):
+    origin, dest, airlines = _airport(origin), _airport(dest), _airlines(airlines)
     _dates(depart, ret)
     dom = _domestic(origin, dest)
-    key = f"{_p()}|out|{settings.airline_filter}|{origin}|{dest}|{depart}|{ret}|{dom}"
+    key = f"{_p()}|out|{airlines}|{origin}|{dest}|{depart}|{ret}|{dom}"
 
     async def fn():
-        res = await S.provider.outbound(origin, dest, depart, ret, exclude_basic=dom)
+        res = await S.provider.outbound(origin, dest, depart, ret, exclude_basic=dom, airlines=airlines)
         res["main_confirmed"] = dom
         res["domestic"] = dom
         res["coords"] = _coords_for(res["itineraries"], [origin, dest])
-        res["google_flights_url"] = res.get("google_flights_url") or _gf_url(origin, dest, depart, ret)
+        res["google_flights_url"] = res.get("google_flights_url") or _gf_url(origin, dest, depart, ret, airlines)
         if dom:
             prices = [it["price"] for it in res["itineraries"]]
-            store.put_main_fare(_main_key(origin, dest, depart, ret), min(prices) if prices else None,
+            store.put_main_fare(_main_key(origin, dest, depart, ret, airlines), min(prices) if prices else None,
                                 keep_lower=False)
         return res
 
@@ -305,26 +326,28 @@ async def flights(origin: str, dest: str, depart: str, ret: str, confirm: bool =
 
 
 @app.get("/api/returns")
-async def returns(origin: str, dest: str, depart: str, ret: str, token: str, confirm: bool = False):
-    origin, dest = _airport(origin), _airport(dest)
+async def returns(origin: str, dest: str, depart: str, ret: str, token: str, airlines: str | None = None,
+                  confirm: bool = False):
+    origin, dest, airlines = _airport(origin), _airport(dest), _airlines(airlines)
     _dates(depart, ret)
     dom = _domestic(origin, dest)
-    key = f"{_p()}|ret|{settings.airline_filter}|{_tokhash(token)}"
+    key = f"{_p()}|ret|{airlines}|{_tokhash(token)}"
 
     async def fn():
-        res = await S.provider.returns(origin, dest, depart, ret, token, exclude_basic=dom)
+        res = await S.provider.returns(origin, dest, depart, ret, token, exclude_basic=dom, airlines=airlines)
         res["coords"] = _coords_for(res["itineraries"], [origin, dest])
-        res["google_flights_url"] = res.get("google_flights_url") or _gf_url(origin, dest, depart, ret)
+        res["google_flights_url"] = res.get("google_flights_url") or _gf_url(origin, dest, depart, ret, airlines)
         return res
 
     return await _cached_call(key, settings.flights_ttl, confirm, fn)
 
 
 @app.get("/api/booking")
-async def booking(origin: str, dest: str, depart: str, ret: str, token: str, confirm: bool = False):
+async def booking(origin: str, dest: str, depart: str, ret: str, token: str, airlines: str | None = None,
+                  confirm: bool = False):
     from deltamap.providers.base import classify_fare
 
-    origin, dest = _airport(origin), _airport(dest)
+    origin, dest, airlines = _airport(origin), _airport(dest), _airlines(airlines)
     _dates(depart, ret)
     key = f"{_p()}|book|{_tokhash(token)}"
 
@@ -336,13 +359,16 @@ async def booking(origin: str, dest: str, depart: str, ret: str, token: str, con
 
     res = await _cached_call(key, settings.flights_ttl, confirm, fn)
     if isinstance(res, dict):
-        # Lowest Main Cabin (or better) price sold by Delta itself, for this itinerary.
+        # Lowest Main Cabin (or better) price for this itinerary: sold by Delta itself in Delta
+        # mode; sold by any airline (not a travel agency) in SkyTeam mode.
+        def seller_ok(o):
+            return "delta" in (o.get("book_with") or "").lower() if airlines == "DL" else o.get("is_airline")
         mains = [o["price"] for o in res["options"]
                  if o["fare_is_main"] == "yes" and o["leg"] == "together" and o.get("price") is not None
-                 and "delta" in (o.get("book_with") or "").lower()]
+                 and seller_ok(o)]
         res["main_price"] = min(mains) if mains else None
         if res["main_price"] is not None:
-            store.put_main_fare(_main_key(origin, dest, depart, ret), res["main_price"], keep_lower=True)
+            store.put_main_fare(_main_key(origin, dest, depart, ret, airlines), res["main_price"], keep_lower=True)
     return res
 
 

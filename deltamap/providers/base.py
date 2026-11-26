@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from ..config import Region
+from ..config import Area
 
 
 class ProviderError(Exception):
@@ -22,21 +22,22 @@ class ProviderError(Exception):
 class Provider(Protocol):
     name: str
 
-    async def explore(self, origin: str, depart: str, ret: str, region: Region) -> list[dict]: ...
+    async def explore(
+        self, origin: str, depart: str, ret: str, area: Area, region_id: str, airlines: str
+    ) -> list[dict]: ...
 
     async def outbound(
-        self, origin: str, dest: str, depart: str, ret: str, exclude_basic: bool
+        self, origin: str, dest: str, depart: str, ret: str, exclude_basic: bool, airlines: str
     ) -> dict: ...
 
     async def returns(
-        self, origin: str, dest: str, depart: str, ret: str, departure_token: str, exclude_basic: bool
+        self, origin: str, dest: str, depart: str, ret: str, departure_token: str, exclude_basic: bool,
+        airlines: str,
     ) -> dict: ...
 
     async def booking(self, origin: str, dest: str, depart: str, ret: str, booking_token: str) -> dict: ...
 
     async def quota(self) -> dict: ...
-
-    def calls_for_explore(self, region: Region) -> int: ...
 
 
 def is_delta_segment(seg: dict) -> bool:
@@ -87,17 +88,17 @@ def parse_itinerary(raw: dict) -> dict:
     }
 
 
-def parse_flight_results(data: dict[str, Any], airline_filter: str) -> list[dict]:
-    """best_flights + other_flights -> itineraries, keeping only ones with a Delta flight."""
+def parse_flight_results(data: dict[str, Any]) -> list[dict]:
+    """best_flights + other_flights -> priced itineraries, cheapest first.
+
+    The search itself is filtered to Delta (DL) or the whole SkyTeam alliance, so every
+    itinerary is kept; `delta` marks the ones that include a Delta flight."""
     out = []
     for group in ("best_flights", "other_flights"):
         for raw in data.get(group) or []:
             it = parse_itinerary(raw)
             it["best"] = group == "best_flights"
             out.append(it)
-    if airline_filter != "DL":
-        # SKYTEAM (or other) mode: Google returns partner-only trips too; keep Delta ones.
-        out = [it for it in out if it["delta"]]
     out = [it for it in out if it["price"] is not None]
     out.sort(key=lambda it: it["price"])
     return out

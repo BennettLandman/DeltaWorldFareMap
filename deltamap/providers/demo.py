@@ -11,7 +11,7 @@ import math
 from datetime import datetime, timedelta
 
 from .. import airports
-from ..config import Region
+from ..config import Area
 from .base import parse_flight_results
 
 DESTS = {
@@ -26,6 +26,28 @@ DESTS = {
     "asia": "ICN NRT HND PVG TPE MNL".split(),
     "oce": "SYD AKL".split(),
 }
+# Extra cities that only a deep-search area finds (the whole-region call "misses" them).
+DEEP_DESTS = {
+    "nam.ak": "ANC FAI JNU KTN SIT", "nam.hi": "HNL OGG KOA LIH", "nam.west": "BOI BZN JAC SMF ABQ TUS",
+    "nam.midwest": "MKE CMH IND OMA DSM", "nam.south": "MEM SAV CHS ELP OKC",
+    "nam.northeast": "PWM BTV BUF PIT SYR", "nam.ca": "YYC YEG YOW YHZ YWG", "nam.mx": "GDL MTY MID",
+    "car.greater": "SDQ HAV", "car.lesser": "STT SXM ANU BGI",
+    "sam.br": "GIG BSB REC FOR", "sam.ar": "COR MDZ", "sam.cl": "PUQ", "sam.co": "MDE CTG CLO", "sam.pe": "CUZ",
+    "eur.isles": "MAN SNN GLA", "eur.nordic": "KEF OSL ARN CPH HEL BGO", "eur.west": "BRU DUS NCE GVA",
+    "eur.central": "VIE PRG BUD BER", "eur.south": "VCE NAP OPO", "eur.east": "WAW KRK OTP SOF",
+    "afr.north": "CMN RAK CAI TUN", "afr.west": "ABJ", "afr.central": "FIH DLA", "afr.east": "ADD DAR EBB",
+    "afr.south": "DUR WDH", "mde.arabia": "DOH RUH JED AUH", "mde.levant": "AMM BEY",
+    "asia.jp": "KIX FUK CTS", "asia.cn": "PEK CAN XMN", "asia.east": "HKG", "asia.se": "SIN BKK SGN HAN CGK DPS",
+    "asia.south": "DEL BOM BLR MAA HYD", "oce.au": "BNE PER ADL", "oce.nz": "CHC WLG ZQN",
+    "oce.poly": "PPT", "oce.mela": "NAN NOU",
+}
+# Cities reachable only on SkyTeam partners (shown in SkyTeam mode), keyed by area id.
+SKYTEAM_DESTS = {
+    "eur": "TLS LYS", "eur.east": "BEG", "asia": "HAN SGN", "asia.se": "SUB", "asia.cn": "CTU",
+    "afr": "NBO EBB", "mde": "BEY", "sam": "COR", "nam": "GDL MTY", "oce.au": "OOL",
+}
+PARTNER_NAME = {"eur": "Air France", "asia": "Korean Air", "afr": "Kenya Airways", "mde": "Middle East Airlines",
+                "sam": "Aerolíneas Argentinas", "nam": "Aeroméxico", "oce": "Virgin Australia"}
 US_HUBS = ["ATL", "DTW", "MSP", "SLC", "JFK", "LAX", "SEA", "BOS"]
 GATEWAYS = {  # where long-haul legs leave from / connect through
     "nam": US_HUBS, "car": ["ATL", "JFK"], "cam": ["ATL"], "sam": ["ATL", "JFK"],
@@ -51,6 +73,9 @@ def _region_of(code: str) -> str:
     for r, codes in DESTS.items():
         if code in codes:
             return r
+    for area, codes in (*DEEP_DESTS.items(), *SKYTEAM_DESTS.items()):
+        if code in codes.split():
+            return area.split(".")[0]
     return "nam"
 
 
@@ -122,14 +147,13 @@ class DemoProvider:
     def __init__(self, store):
         self.store = store
 
-    def calls_for_explore(self, region: Region) -> int:
-        return 1
-
-    async def explore(self, origin, depart, ret, region: Region) -> list[dict]:
+    async def explore(self, origin, depart, ret, area: Area, region_id: str, airlines: str) -> list[dict]:
         if not airports.get(origin):
             return []
+        codes = DESTS.get(area.id, []) if area.id == region_id else DEEP_DESTS.get(area.id, "").split()
+        partner_only = SKYTEAM_DESTS.get(area.id, "").split() if airlines == "SKYTEAM" else []
         out = []
-        for code in DESTS.get(region.id, []):
+        for code in [*codes, *partner_only]:
             if code == origin or not airports.get(code):
                 continue
             routes = _routes(origin, code)
@@ -138,13 +162,15 @@ class DemoProvider:
             best = min(routes, key=lambda p: _price(origin, code, depart, ret, len(p) - 2, "-".join(p)))
             stops = len(best) - 2
             a = airports.get(code)
+            partner = code in partner_only
             out.append({
                 "code": code, "city": a["city"], "country": a["country"], "country_code": a["country"],
                 "lat": a["lat"], "lon": a["lon"],
                 "price": _price(origin, code, depart, ret, stops, "-".join(best)),
-                "airline": "Delta", "airline_code": "DL", "stops": stops,
+                "airline": PARTNER_NAME.get(region_id, "SkyTeam partner") if partner else "Delta",
+                "airline_code": "SKYTEAM" if partner else "DL", "stops": stops,
                 "minutes": _leg(best, depart, (origin, code))[2],
-                "fare_is_main": "unknown", "region": region.id, "link": None, "thumbnail": None,
+                "fare_is_main": "unknown", "region": region_id, "link": None, "thumbnail": None,
             })
         return out
 
@@ -163,12 +189,12 @@ class DemoProvider:
                 })
         return raws
 
-    async def outbound(self, origin, dest, depart, ret, exclude_basic) -> dict:
+    async def outbound(self, origin, dest, depart, ret, exclude_basic, airlines) -> dict:
         raws = self._options(origin, dest, depart, (origin, dest, depart, ret), (origin, dest, depart),
                              exclude_basic, "departure_token", {"o": origin, "d": dest})
         return self._payload(raws, origin, dest, depart, ret)
 
-    async def returns(self, origin, dest, depart, ret, departure_token, exclude_basic) -> dict:
+    async def returns(self, origin, dest, depart, ret, departure_token, exclude_basic, airlines) -> dict:
         sel = _untok(departure_token)
         raws = self._options(dest, origin, ret, (origin, dest, depart, ret), (dest, origin, ret, sel["path"]),
                              exclude_basic, "booking_token", {"o": origin, "d": dest, "out": sel["path"]})
@@ -191,7 +217,7 @@ class DemoProvider:
         }
 
     def _payload(self, raws, origin, dest, depart, ret):
-        its = parse_flight_results({"other_flights": raws}, "DL")
+        its = parse_flight_results({"other_flights": raws})
         for i, it in enumerate(its[:3]):
             it["best"] = True
         return {"itineraries": its, "google_flights_url": None, "price_insights": None}

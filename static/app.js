@@ -151,7 +151,7 @@ function renderList() {
   $("#list tbody").innerHTML = rows.map((d) => `<tr data-code="${esc(d.code)}">
     <td>${esc(d.city)}</td><td>${esc(d.country)}</td><td>${esc(d.code)}</td>
     <td class="num">${money(d.price)}${d.fare_is_main === "yes" ? " ✓" : ""}</td>
-    <td class="num">${stopsTxt(d.stops)}</td><td class="num">${dur(d.minutes)}</td><td>${esc(names[d.region] || d.region)}</td></tr>`).join("");
+    <td class="num">${stopsTxt(d.stops)}</td><td class="num">${dur(d.minutes)}</td><td>${esc(d.airline || "")}</td><td>${esc(names[d.region] || d.region)}</td></tr>`).join("");
   document.querySelectorAll("#list th").forEach((th) => {
     th.classList.toggle("sorted", th.dataset.k === k);
     th.classList.toggle("desc", th.dataset.k === k && desc);
@@ -183,8 +183,9 @@ $("#stops").addEventListener("change", (e) => { S.filter.stops = e.target.value;
 function renderChips() {
   $("#chips").innerHTML = S.config.regions.map((r) => {
     const on = S.filter.regions.has(r.id), pending = on && S.query && !S.loaded.has(r.id);
+    const deep = r.deep.length ? `\nDeep search adds ${r.deep.length}: ${r.deep.join(", ")}` : "";
     return `<button type="button" class="chip ${on ? "on" : ""}" data-r="${r.id}"
-      title="${on ? "Click to hide and skip in searches" : "Click to include (1 search if not cached)"}">${esc(r.name)}${pending ? " …" : ""}</button>`;
+      title="${esc((on ? "Click to hide and skip in searches" : "Click to include (1 search if not cached)") + deep)}">${esc(r.name)}${pending ? " …" : ""}</button>`;
   }).join("");
 }
 $("#chips").addEventListener("click", (e) => {
@@ -196,6 +197,15 @@ $("#chips").addEventListener("click", (e) => {
   if (S.filter.regions.has(r) && S.query && !S.loaded.has(r) && !S.es) loadRegions([r]);
 });
 
+// Airline network and deep-search options, as chosen in the search bar.
+const searchOpts = () => ({ airlines: $("#airlines").value, deep: $("#deep").checked });
+const optsQS = (o) => `&airlines=${o.airlines}${o.deep ? "&deep=1" : ""}`;
+["#airlines", "#deep"].forEach((sel) => $(sel).addEventListener("change", () => {
+  localStorage.setItem("airlines", $("#airlines").value);
+  localStorage.setItem("deep", $("#deep").checked ? "1" : "");
+  updateCost();
+}));
+
 // Show what the next Search would cost (cheap local call; never uses a search).
 let costTimer = null;
 function updateCost() {
@@ -206,7 +216,7 @@ function updateCost() {
     const go = $("#go");
     if (!regs.length) { go.textContent = "Search"; go.title = "Pick at least one region"; return; }
     if (!origin || !depart || !ret || ret <= depart) { go.textContent = "Search"; return; }
-    const r = await getJSON(`/api/estimate?origin=${encodeURIComponent(origin)}&depart=${depart}&ret=${ret}&regions=${regs.join(",")}`);
+    const r = await getJSON(`/api/estimate?origin=${encodeURIComponent(origin)}&depart=${depart}&ret=${ret}&regions=${regs.join(",")}${optsQS(searchOpts())}`);
     if (!r.ok) { go.textContent = "Search"; return; }
     const n = r.body.live_calls;
     go.textContent = r.body.provider === "demo" ? "Search" : n ? `Search · ${n} search${n > 1 ? "es" : ""}` : "Search · cached";
@@ -262,7 +272,8 @@ $("#search").addEventListener("submit", async (e) => {
   if (!depart || !ret) return setStatus(`<span class="err">Pick both dates.</span>`);
   if (ret <= depart) return setStatus(`<span class="err">Return must be after departure.</span>`);
   if (!S.filter.regions.size) return setStatus(`<span class="err">Pick at least one region.</span>`);
-  const qs = `origin=${encodeURIComponent(origin)}&depart=${depart}&ret=${ret}`;
+  const opts = searchOpts();
+  const qs = `origin=${encodeURIComponent(origin)}&depart=${depart}&ret=${ret}${optsQS(opts)}`;
   const regs = [...S.filter.regions];
   const est = await getJSON(`/api/estimate?${qs}&regions=${regs.join(",")}`);
   if (!est.ok) return setStatus(`<span class="err">${esc(est.body.detail || "Search failed")}</span>`);
@@ -274,7 +285,7 @@ $("#search").addEventListener("submit", async (e) => {
   }
   const home = await getJSON(`/api/airport/${origin}`);
   S.home = home.body; $("#origin").value = `${origin} · ${S.home.city || S.home.name}`;
-  S.query = { origin, depart, ret };
+  S.query = { origin, depart, ret, ...opts };
   history.replaceState(null, "", `?${qs}`);
   closePanel();
   S.dests.clear(); S.loaded.clear();
@@ -285,7 +296,7 @@ $("#search").addEventListener("submit", async (e) => {
 
 // Load extra regions into the current map (after a chip is switched on).
 async function loadRegions(regs) {
-  const q = S.query, qs = `origin=${q.origin}&depart=${q.depart}&ret=${q.ret}`;
+  const q = S.query, qs = `origin=${q.origin}&depart=${q.depart}&ret=${q.ret}${optsQS(q)}`;
   const est = await getJSON(`/api/estimate?${qs}&regions=${regs.join(",")}`);
   if (!est.ok) return;
   let confirm = false;
@@ -301,11 +312,12 @@ function startExplore(qs, regs, confirm, est) {
   S.regionsLoaded = 0; S.regionErrors = [];
   renderMap(); renderChips();
   $("#go").disabled = true;
-  const total = regs.length;
+  const total = est.jobs || regs.length;
+  const unit = total === regs.length ? "regions" : "areas";
   const cost = est.provider === "demo" ? "demo data" : est.live_calls ? `uses ${est.live_calls} search${est.live_calls > 1 ? "es" : ""}` : "all from cache, 0 searches";
   const progress = () => {
     const errs = S.regionErrors.length ? ` · <span class="err">${S.regionErrors.map(esc).join("; ")}</span>` : "";
-    setStatus(`${S.regionsLoaded} of ${total} regions loaded · ${S.dests.size} cities · ${cost}${errs}`);
+    setStatus(`${S.regionsLoaded} of ${total} ${unit} loaded · ${S.dests.size} cities · ${cost}${errs}`);
   };
   progress();
   const es = new EventSource(`/api/explore?${qs}&regions=${regs.join(",")}${confirm ? "&confirm=1" : ""}`);
@@ -320,8 +332,8 @@ function startExplore(qs, regs, confirm, est) {
   es.addEventListener("region", (ev) => {
     const res = JSON.parse(ev.data);
     S.regionsLoaded++;
-    if (!res.error) S.loaded.add(res.region);
-    if (res.error) S.regionErrors.push(`${REGION_NAME()[res.region] || res.region}: ${res.error}`);
+    if (!res.error && res.area === res.region) S.loaded.add(res.region);
+    if (res.error) S.regionErrors.push(`${res.area_name || REGION_NAME()[res.region] || res.region}: ${res.error}`);
     for (const d of res.destinations) {
       const cur = S.dests.get(d.code);
       if (!cur || d.price < cur.price) S.dests.set(d.code, d);
@@ -368,7 +380,7 @@ function badge(d) {
 function renderPanel() {
   const d = S.city, q = S.query;
   let h = `<h2>${esc(d.city)} <span class="sub">${esc(d.code)}</span></h2>
-    <div class="sub">${esc(d.country)} · ${esc(q.origin)} ⇄ ${esc(d.code)} · ${esc(q.depart)} – ${esc(q.ret)} · 1 adult, economy</div>
+    <div class="sub">${esc(d.country)} · ${esc(q.origin)} ⇄ ${esc(d.code)} · ${esc(q.depart)} – ${esc(q.ret)} · 1 adult, economy · ${q.airlines === "DL" ? "Delta" : "SkyTeam"}</div>
     <div class="fare">${money(d.price)} <small>lowest round trip</small>${badge(d)}</div>`;
   if (d.explore_price != null && d.explore_price !== d.price)
     h += `<div class="note">Explore's price was ${money(d.explore_price)} (Basic Economy); ${money(d.price)} is the lowest Main Cabin fare found.</div>`;
@@ -472,7 +484,7 @@ async function openCity(code) {
   $("#panel").classList.add("open"); $("#panel").setAttribute("aria-hidden", "false");
   renderMap(); renderPanel(); routeLayer.clearLayers();
   const q = S.query;
-  const r = await guarded(`/api/flights?origin=${q.origin}&dest=${code}&depart=${q.depart}&ret=${q.ret}`);
+  const r = await guarded(`/api/flights?origin=${q.origin}&dest=${code}&depart=${q.depart}&ret=${q.ret}&airlines=${q.airlines}`);
   if (S.city !== d) return;
   if (r.cancelled) { S.out = { error: "Cancelled." }; return renderPanel(); }
   if (r.error) { S.out = { error: r.error }; return renderPanel(); }
@@ -508,7 +520,7 @@ async function pickOut(i) {
   renderPanel(); drawRoutes();
   const it = S.out.data.itineraries[i];
   if (!it.departure_token) { S.ret = { error: "This option has no return lookup token." }; return renderPanel(); }
-  const r = await guarded(`/api/returns?origin=${q.origin}&dest=${d.code}&depart=${q.depart}&ret=${q.ret}&token=${encodeURIComponent(it.departure_token)}`);
+  const r = await guarded(`/api/returns?origin=${q.origin}&dest=${d.code}&depart=${q.depart}&ret=${q.ret}&airlines=${q.airlines}&token=${encodeURIComponent(it.departure_token)}`);
   if (S.city !== d || S.outSel !== i) return;
   S.ret = r.data ? { data: r.data } : { error: r.error || "Cancelled." };
   renderPanel(); drawRoutes(); refreshQuota();
@@ -530,7 +542,7 @@ async function checkFare() {
   const it = S.ret?.data?.itineraries[S.retSel], q = S.query, d = S.city;
   if (!it?.booking_token) { S.book = { error: "No booking token for this itinerary." }; return renderPanel(); }
   S.book = { loading: true }; renderPanel();
-  const r = await guarded(`/api/booking?origin=${q.origin}&dest=${d.code}&depart=${q.depart}&ret=${q.ret}&token=${encodeURIComponent(it.booking_token)}`);
+  const r = await guarded(`/api/booking?origin=${q.origin}&dest=${d.code}&depart=${q.depart}&ret=${q.ret}&airlines=${q.airlines}&token=${encodeURIComponent(it.booking_token)}`);
   S.book = r.data ? { data: r.data } : { error: r.error || "Cancelled." };
   const mp = r.data?.main_price;
   if (mp != null && S.city === d && (d.fare_is_main !== "yes" || mp < d.price)) {
@@ -576,6 +588,9 @@ $("#origin").addEventListener("blur", () => setTimeout(hideAC, 100));
   const t = new Date(); t.setDate(t.getDate() + 30);
   const r = new Date(t); r.setDate(r.getDate() + 7);
   $("#origin").value = p.get("origin") || S.config.default_origin;
+  const al = p.get("airlines") || localStorage.getItem("airlines") || S.config.airline_filter;
+  $("#airlines").value = S.config.airlines.some((a) => a.id === al) ? al : S.config.airline_filter;
+  $("#deep").checked = p.has("deep") ? p.get("deep") === "1" : localStorage.getItem("deep") === "1";
   $("#depart").value = p.get("depart") || iso(t);
   $("#ret").value = p.get("ret") || iso(r);
   $("#depart").min = iso(new Date());
@@ -585,5 +600,5 @@ $("#origin").addEventListener("blur", () => setTimeout(hideAC, 100));
   refreshQuota(true); updateCost();
   setStatus(S.config.provider === "demo"
     ? "Demo mode: no live fares. Press Search to try the interface."
-    : "Pick regions and dates, then Search. Each region is 1 search; repeats within 6 hours are free.");
+    : "Pick regions and dates, then Search. Each region is 1 search (Deep search adds more); repeats within 6 hours are free.");
 })();

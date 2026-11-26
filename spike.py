@@ -132,7 +132,7 @@ async def main() -> int:
                   "return_date": ret, "type": 1, "include_airlines": "DL", **common}
             out = await p.search(fp, f"spike flights {tgt['code']}")
             save(f"flights_{tgt['code']}", out)
-            its = parse_flight_results(out, "DL")
+            its = parse_flight_results(out)
             print(f"\n[flights {o}-{tgt['code']}] {len(its)} itineraries; Explore said ${tgt['price']}, "
                   f"Flights cheapest ${its[0]['price'] if its else '—'}")
             print(f"  google_flights_url present: {bool((out.get('search_metadata') or {}).get('google_flights_url'))}")
@@ -143,7 +143,7 @@ async def main() -> int:
                 rp = dict(fp, departure_token=its[0]["departure_token"])
                 back = await p.search(rp, f"spike returns {tgt['code']}")
                 save(f"returns_{tgt['code']}", back)
-                rits = parse_flight_results(back, "DL")
+                rits = parse_flight_results(back)
                 print(f"\n[returns] {len(rits)} itineraries, cheapest ${rits[0]['price'] if rits else '—'}; "
                       f"booking_token on first: {bool(rits and rits[0]['booking_token'])}")
                 if rits and rits[0]["booking_token"]:
@@ -165,7 +165,7 @@ async def main() -> int:
                   "return_date": ret, "type": 1, "include_airlines": "DL", "exclude_basic": "true", **common}
             dom = await p.search(fp, f"spike main {tgt['code']}")
             save(f"flights_main_{tgt['code']}", dom)
-            its = parse_flight_results(dom, "DL")
+            its = parse_flight_results(dom)
             print(f"\n[domestic {o}-{tgt['code']} exclude_basic] Explore ${tgt['price']} vs Main "
                   f"${its[0]['price'] if its else '—'} ({len(its)} itineraries)")
 

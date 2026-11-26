@@ -8,7 +8,7 @@ import httpx
 
 from .. import airports
 from ..cache import Store
-from ..config import Region, Settings
+from ..config import Area, Settings
 from .base import ProviderError, parse_booking_options, parse_flight_results
 
 SEARCH_URL = "https://serpapi.com/search.json"
@@ -61,28 +61,26 @@ class SerpApiProvider:
         return {"currency": "USD", "hl": "en", "gl": "us", "adults": 1, "travel_class": 1}
 
     # -- map -------------------------------------------------------------------
-    def calls_for_explore(self, region: Region) -> int:
-        return 1
-
-    async def explore(self, origin: str, depart: str, ret: str, region: Region) -> list[dict]:
+    async def explore(self, origin: str, depart: str, ret: str, area: Area, region_id: str,
+                      airlines: str) -> list[dict]:
         data = await self.search(
             {
                 "engine": "google_travel_explore",
                 "departure_id": origin,
-                "arrival_area_id": region.area_id,
+                "arrival_area_id": area.area_id,
                 "outbound_date": depart,
                 "return_date": ret,
                 "type": 1,
                 "travel_mode": 1,
-                "include_airlines": self.s.airline_filter,
+                "include_airlines": airlines,
                 **self._common(),
             },
-            f"explore {origin} {region.id} {depart}/{ret}",
+            f"explore {origin} {area.id} {airlines} {depart}/{ret}",
         )
-        return parse_explore(data, region.id)
+        return parse_explore(data, region_id)
 
     # -- drill-down ------------------------------------------------------------
-    def _flight_params(self, origin, dest, depart, ret, exclude_basic) -> dict[str, Any]:
+    def _flight_params(self, origin, dest, depart, ret, exclude_basic, airlines) -> dict[str, Any]:
         return {
             "engine": "google_flights",
             "departure_id": origin,
@@ -90,23 +88,23 @@ class SerpApiProvider:
             "outbound_date": depart,
             "return_date": ret,
             "type": 1,
-            "include_airlines": self.s.airline_filter,
+            "include_airlines": airlines,
             "exclude_basic": "true" if exclude_basic else None,
             **self._common(),
         }
 
-    async def outbound(self, origin, dest, depart, ret, exclude_basic) -> dict:
+    async def outbound(self, origin, dest, depart, ret, exclude_basic, airlines) -> dict:
         data = await self.search(
-            self._flight_params(origin, dest, depart, ret, exclude_basic),
-            f"flights {origin}-{dest} {depart}/{ret}",
+            self._flight_params(origin, dest, depart, ret, exclude_basic, airlines),
+            f"flights {origin}-{dest} {airlines} {depart}/{ret}",
         )
-        return _flights_payload(data, self.s.airline_filter)
+        return _flights_payload(data)
 
-    async def returns(self, origin, dest, depart, ret, departure_token, exclude_basic) -> dict:
-        p = self._flight_params(origin, dest, depart, ret, exclude_basic)
+    async def returns(self, origin, dest, depart, ret, departure_token, exclude_basic, airlines) -> dict:
+        p = self._flight_params(origin, dest, depart, ret, exclude_basic, airlines)
         p["departure_token"] = departure_token
-        data = await self.search(p, f"returns {dest}-{origin} {depart}/{ret}")
-        return _flights_payload(data, self.s.airline_filter)
+        data = await self.search(p, f"returns {dest}-{origin} {airlines} {depart}/{ret}")
+        return _flights_payload(data)
 
     async def booking(self, origin, dest, depart, ret, booking_token) -> dict:
         data = await self.search(
@@ -194,9 +192,9 @@ def parse_explore(data: dict, region_id: str) -> list[dict]:
     return list(out.values())
 
 
-def _flights_payload(data: dict, airline_filter: str) -> dict:
+def _flights_payload(data: dict) -> dict:
     return {
-        "itineraries": parse_flight_results(data, airline_filter),
+        "itineraries": parse_flight_results(data),
         "google_flights_url": (data.get("search_metadata") or {}).get("google_flights_url"),
         "price_insights": data.get("price_insights"),
     }

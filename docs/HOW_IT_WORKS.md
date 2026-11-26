@@ -31,10 +31,13 @@ The browser never talks to SerpApi directly, and the API key never leaves the se
 | `GET /api/airports?q=` | Airport autocomplete (offline, from `airportsdata`) | no |
 | `GET /api/quota` | Searches left (SerpApi Account API, cached 60 s) | no |
 | `GET /api/estimate` | How many searches a map search would use, and any guardrail | no |
-| `GET /api/explore` | Map search, streamed per region as Server-Sent Events | 1 per uncached region |
+| `GET /api/explore` | Map search, streamed per area as Server-Sent Events | 1 per uncached area |
 | `GET /api/flights` | Outbound flights for one city | 1 (cached 1 h) |
 | `GET /api/returns` | Return flights for a chosen outbound (`departure_token`) | 1 (cached 1 h) |
 | `GET /api/booking` | Booking options and fare names (`booking_token`) | 1 (cached 1 h) |
+
+The search endpoints take `airlines=DL|SKYTEAM`, and the map endpoints also take `deep=1`. Both are
+part of every cache key.
 
 When a guardrail stops a call, the endpoint returns HTTP 409 with a message. The page then asks
 the user to confirm, or shows why the call was blocked.
@@ -48,7 +51,7 @@ the user to confirm, or shows why the call was blocked.
 - the dates
 - `type=1` (round trip)
 - `travel_mode=1` (flights only)
-- `include_airlines=DL`
+- `include_airlines=DL` or `SKYTEAM`
 
 Each result has a price, the airport, coordinates, stops, duration and airline.
 
@@ -62,6 +65,11 @@ Each result has a price, the airport, coordinates, stops, duration and airline.
 
 US domestic searches add `exclude_basic=true`. SerpApi supports that only for US domestic economy.
 
+**Airline networks.** `DL` returns flights sold under a Delta flight number, including Delta
+codeshares on partners. `SKYTEAM` returns flights on any SkyTeam member, so partner-only routes
+appear too. The app keeps every itinerary Google returns. Each one carries a `delta` flag for
+whether it includes a Delta flight.
+
 **Quota: the SerpApi Account API** (`account.json`). It reports `total_searches_left`,
 `this_hour_searches` and `account_rate_limit_per_hour`, and calling it is free. The app calls it
 at startup to validate the key, and refreshes it at most once a minute.
@@ -69,8 +77,8 @@ at startup to validate the key, and refreshes it at most once a minute.
 ## Regions
 
 `arrival_area_id` accepts exactly **one** Google location ID. One Explore call returns about 60–90
-destinations, so the world is split into nine continent-sized regions in
-[`deltamap/config.py`](../deltamap/config.py):
+destinations, of which only about 30–50 are priced. So the world is split into nine
+continent-sized regions in [`deltamap/config.py`](../deltamap/config.py):
 
 | id | Region | Google location ID |
 |---|---|---|
@@ -84,6 +92,30 @@ destinations, so the world is split into nine continent-sized regions in
 | `asia` | Asia | `/m/0j0k` |
 | `oce` | Oceania | `/m/05nrg` |
 
+### Deep-search areas
+
+A continent call still leaves airports out. For BNA in March, North America returned 44 cities,
+with only Anchorage and Fairbanks in Alaska. Europe returned 31, with no Frankfurt, Brussels or
+Iceland. Oceania returned 6. **Deep search** adds 37 smaller areas: countries and UN-style
+sub-regions, each one more Explore call. They are listed in `config.py` as `Region.deep`.
+
+Every area's Google ID is a Freebase ID, looked up on Wikidata (property P646). The continent IDs
+the app already used match Wikidata exactly. The areas include:
+
+| Area | ID | Area | ID |
+|---|---|---|---|
+| Alaska | `/m/0hjy` | Nordic countries | `/m/0140mf` |
+| Hawaii | `/m/03gh4` | British Isles | `/m/017jq` |
+| Western US | `/m/018hr_` | South Asia | `/m/06nn1` |
+| Northeastern US | `/m/027rjr` | Southeast Asia | `/m/073q1` |
+| Canada | `/m/0d060g` | Australia | `/m/0chghy` |
+| Mexico | `/m/0b90_r` | New Zealand | `/m/0ctw_b` |
+
+The whole-region call keeps its old cache key (`…|eur`), and areas are keyed `…|eur.nordic`. A
+region searched normally therefore stays cached when deep search is turned on later. Results from
+all areas are merged by airport, keeping the cheapest fare, and are tagged with their parent
+region, so the region chips still filter them.
+
 Explore can list one airport under two city names. For example, FLL appeared as both "Miami" and
 "Fort Lauderdale". The parser keeps one entry per airport: the cheaper one, or on a tie, the one
 whose name matches the airport's own city.
@@ -95,8 +127,10 @@ whose name matches the airport's own city.
   in `main_fares` and replaces the map price.
 - **International:** `/api/booking` classifies each fare name. Names containing *basic* are Basic.
   Names containing *main*, *classic*, *comfort*, *premium*, *first*, *business* or *standard* are
-  Main or better. The lowest Main-or-better price **sold by Delta itself** is stored in
-  `main_fares`, keeping the lower price if one is already stored, and replaces the map price.
+  Main or better. The lowest Main-or-better price is stored in `main_fares`, keeping the lower
+  price if one is already stored, and replaces the map price. In Delta mode only fares **sold by
+  Delta itself** count. In SkyTeam mode, a fare sold by any airline counts, but travel agencies
+  don't.
 - Later map searches for the same airport and dates (within 6 hours) apply the stored Main fares
   automatically.
 
@@ -114,6 +148,8 @@ Before any call that uses searches, `guard()` in `app.py` checks the quota:
 - **Monthly block:** fewer searches left than the call needs.
 - **Hourly block:** the hourly rate limit would be exceeded.
 - **Confirmation:** fewer than `LOW_QUOTA_WARN` searches left (default 20). The user must confirm.
+- **Big search:** more than `BIG_SEARCH_WARN` searches in one action (default 10), such as a deep
+  search. The user must confirm.
 
 Every search the app makes is logged in the `calls` table. A transport error (a network blip) is
 retried without being logged, since SerpApi never received it.
@@ -143,8 +179,10 @@ spends searches.
 
 - **Another data source:** implement the provider interface in
   [`deltamap/providers/base.py`](../deltamap/providers/base.py), which has `explore`, `outbound`,
-  `returns`, `booking`, `quota` and `calls_for_explore`. Then select it in `app.py`'s `lifespan`.
-- **Another airline:** `AIRLINE_FILTER` accepts any IATA code that Google Flights understands. The
+  `returns`, `booking` and `quota` (each map call is one `explore` for one `Area`). Then select it in `app.py`'s `lifespan`.
+- **Another airline or alliance:** add its Google Flights code (an IATA code, or `ONEWORLD` / `STAR_ALLIANCE`) to `AIRLINES` in `config.py`. The
   Main Cabin logic and the delta.com link are Delta-specific.
+- **More deep areas:** add an `Area` to a region's `deep` tuple in `config.py`, using the place's
+  Freebase ID from Wikidata (P646).
 - **Flexible dates (±3 days):** not built. It would multiply the Explore calls by the number of
   date pairs, so it needs a careful cost display.

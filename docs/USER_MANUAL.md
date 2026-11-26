@@ -10,7 +10,7 @@ them is invented. With a real SerpApi key, the screens look the same but show li
 
 1. [The screen at a glance](#1-the-screen-at-a-glance)
 2. [Choose your home airport](#2-choose-your-home-airport)
-3. [Choose dates and regions](#3-choose-dates-and-regions)
+3. [Choose dates, regions, airlines and depth](#3-choose-dates-regions-airlines-and-depth)
 4. [Search and read the map](#4-search-and-read-the-map)
 5. [Filter the map](#5-filter-the-map)
 6. [Use the list view](#6-use-the-list-view)
@@ -35,6 +35,8 @@ Open **http://localhost:8000** after starting the app.
 |---|---|
 | **From** | Your home airport. Defaults to BNA (Nashville). |
 | **Depart / Return** | Your travel dates. They default to 30 days from today, for one week. |
+| **Airlines** | *Delta* or *SkyTeam (all partners)*. |
+| **Deep search** | Also searches smaller areas inside each region, to find more airports. |
 | **Search** | Runs the map search. With a live key, the button shows what the search will cost, such as *Search · 9 searches* or *Search · cached*. |
 | **Max price** | A slider that hides cities above a fare. |
 | **Stops** | Any, at most 1 stop, or nonstop only. |
@@ -54,7 +56,7 @@ appear as you type. Use the mouse, or the arrow keys and **Enter**, to pick one.
 Airport lookup runs entirely on your computer, so it never uses a search. You can also type a code
 such as `ATL` directly.
 
-## 3. Choose dates and regions
+## 3. Choose dates, regions, airlines and depth
 
 Pick a **Depart** and a **Return** date. The return date must be after the departure date, and
 the departure date can't be in the past.
@@ -76,16 +78,60 @@ corner shows how many searches you have left:
 > **Tip:** If you only care about Europe, switch every other chip off before searching. That's 1
 > search instead of 9.
 
+### Airlines: Delta or SkyTeam
+
+- **Delta** (the default) shows flights sold as Delta. That includes Delta's codeshares on
+  partners such as Air France, KLM and Korean Air.
+- **SkyTeam (all partners)** shows every airport served by any SkyTeam airline. That includes
+  routes Delta doesn't sell, such as a city only Air France, Aeroméxico or Kenya Airways flies to.
+  The list view's **Airline** column and each city's tooltip name the airline.
+
+Each network is searched and cached separately. Switching to SkyTeam therefore costs a new
+search, even for regions already cached for Delta.
+
+### Deep search: find more airports
+
+One region search returns only Google's top **30–50 priced cities**, so large regions leave many
+airports out. Alaska may show only Anchorage, the Nordic countries may show only the capitals,
+and Australia only Sydney and Melbourne.
+
+Tick **Deep search** to also search smaller areas inside each selected region. Hover over a
+region chip to see its areas:
+
+| Region | Areas added by Deep search |
+|---|---|
+| North America | Alaska, Hawaii, Western US, Midwestern US, Southern US, Northeastern US, Canada, Mexico |
+| Caribbean | Greater Antilles, Lesser Antilles |
+| Central America | none (one search already covers it) |
+| South America | Brazil, Argentina, Chile, Colombia, Peru |
+| Europe | British Isles, Nordic countries and Iceland, Western, Central, Southern and Eastern Europe |
+| Africa | North, West, Central, East and Southern Africa |
+| Middle East | Arabian Peninsula, Levant |
+| Asia | Japan, China, East Asia, Southeast Asia, South Asia (India) |
+| Oceania | Australia, New Zealand, Polynesia, Melanesia |
+
+Each area is **1 search**, on top of the region itself. A region you already searched normally
+stays cached, so turning on Deep search later costs only the extra areas. The Search button
+shows the total before you commit. Any search over 10 searches asks you to confirm first.
+
+![Deep search on the SkyTeam network: 46 areas, 211 cities (demo data)](screenshots/11-deep-skyteam.png)
+
+> **Tip:** Deep search is most useful one region at a time. A deep search of Europe is 7
+> searches, and of Oceania 5. The whole world is 46.
+
 ## 4. Search and read the map
 
 Press **Search**. Regions arrive one at a time, and the status line counts them: *"9 of 9 regions
-loaded · 83 cities · uses 9 searches"*.
+loaded · 83 cities · uses 9 searches"*. With Deep search it counts areas instead, for example
+*"46 of 46 areas loaded"*.
 
 ![The world map after a search](screenshots/03-world-map.png)
 
 How to read the map:
 
-- **★ Red star**: your home airport. The map centers on it.
+- **★ Red star**: your home airport. The map centers on it. Places more than halfway around the
+  world are drawn on the nearer copy of the map. From the US, for example, Japan, Southeast Asia
+  and Australia appear on the left, west of the Pacific.
 - **Dots**: destinations. Their color shows the fare: **green is cheapest, red is most
   expensive**. The legend in the bottom-left gives the range.
 - **Price labels**: the lowest round-trip fare. Where cities crowd together, some labels are
@@ -243,6 +289,7 @@ The app helps you spend them well:
 Habits that help:
 
 1. **Search only the regions you need.** Europe alone is 1 search, and the whole world is 9.
+   Turn on **Deep search** only for the regions where you want every airport.
 2. **Settle your dates before searching.** Each new date pair is a new search.
 3. **Use filters and the list view freely.** They never cost anything.
 4. **Open cities on purpose.** Each new city costs 1 search, and each outbound flight you click

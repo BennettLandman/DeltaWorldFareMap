@@ -23,6 +23,12 @@ searches run low.
   most expensive (red). Prices are labeled on the map.
 - **Region-by-region search.** Search only the parts of the world you care about. Each region
   costs one SerpApi search.
+- **Deep search.** A region search returns only Google's top 30–50 cities, so big regions hide
+  airports such as Alaska, Iceland, smaller Indian cities, and Australia or New Zealand beyond
+  Sydney and Auckland. Deep search adds smaller areas within each selected region (1 search each)
+  to find the rest.
+- **Delta or the whole SkyTeam alliance.** Show only flights sold as Delta, or every airport served
+  by any SkyTeam airline (Air France, KLM, Korean Air, Aeroméxico, Virgin Atlantic and others).
 - **Filters.** Set a maximum price, nonstop or at most one stop, and which regions to show. Filters
   never use a search.
 - **Sortable list view.** Every destination in a table, sortable by city, fare, stops, travel time
@@ -162,7 +168,8 @@ before you run it, and it never searches when you only filter, sort, or re-open 
 
 | Action | Searches |
 |---|---|
-| Map search | 1 per selected region (up to 9). Regions already cached for that airport and those dates (6 hours) cost 0. |
+| Map search | 1 per selected region (up to 9). Regions already cached for that airport, those dates and that airline network (6 hours) cost 0. |
+| Deep search | 1 more per smaller area in each selected region (up to 37 more; 46 for the whole world). Europe alone is 1 + 6. |
 | Turn on another region after a search | 1 |
 | Open a city | 1 (cached for 1 hour) |
 | Pick an outbound flight, which loads the returns | 1 (cached for 1 hour) |
@@ -171,10 +178,12 @@ before you run it, and it never searches when you only filter, sort, or re-open 
 | Filters, list view, sorting, re-opening a cached city | 0 |
 | The searches-left meter and the cost shown on the Search button | 0 |
 
-A full world search, plus a closer look at a few cities, costs about 15 searches. Searching only
-the regions you care about makes the free plan go much further.
+A full world search, plus a closer look at a few cities, costs about 15 searches. A deep search
+of the whole world costs 46. Searching only the regions you care about makes the free plan go much
+further: for example, a deep search of just Europe and Oceania costs 7 + 5 = 12.
 
-**Guardrails.** When fewer than 20 searches are left (`LOW_QUOTA_WARN`), the app asks before every
+**Guardrails.** The app asks before any single search action that uses more than 10 searches
+(`BIG_SEARCH_WARN`). When fewer than 20 searches are left (`LOW_QUOTA_WARN`), it asks before every
 search. If a search would exceed your monthly or hourly limit, the app blocks it and shows only
 cached results. SerpApi does not charge for requests it rejects.
 
@@ -186,11 +195,12 @@ All settings are optional. Put them in `.env`, or set them as environment variab
 |---|---|---|
 | `SERPAPI_KEY` | none | Your SerpApi key. Alternatively, use a `serpapi.key` file. |
 | `DELTAMAP_PROVIDER` | `serpapi` if a key is found, otherwise `demo` | Set to `demo` to use invented fares, even when you have a key. |
-| `AIRLINE_FILTER` | `DL` | `DL` gives Delta-marketed flights, including codeshares with Air France, KLM and other partners. `SKYTEAM` gives the whole alliance, but keeps only itineraries that include a Delta flight. |
+| `AIRLINE_FILTER` | `DL` | The starting choice in the **Airlines** menu. `DL` gives flights sold as Delta, including Delta codeshares on Air France, KLM and other partners. `SKYTEAM` gives every SkyTeam airline, including partner-only routes. You can switch in the page at any time. |
 | `LOW_QUOTA_WARN` | `20` | Below this many searches left, the app asks before each search. |
+| `BIG_SEARCH_WARN` | `10` | The app asks before any search that uses more than this many searches, such as a deep search. |
 
-The default home airport (BNA) and the cache times (6 hours for the map, 1 hour for flights) are
-set in [`deltamap/config.py`](deltamap/config.py).
+The default home airport (BNA), the cache times (6 hours for the map, 1 hour for flights), and the
+regions and deep-search areas are set in [`deltamap/config.py`](deltamap/config.py).
 
 ## Troubleshooting
 
@@ -213,6 +223,13 @@ internet, so check your connection.
 that fails costs nothing, unless SerpApi actually ran the search. Search again later; regions
 that worked stay cached.
 
+**I don't see cities I know Delta serves (Alaska, Iceland, India, Australia…).** A region search
+returns only Google's top 30–50 priced cities, so turn on **Deep search** for that region. Cities
+reachable only on partner airlines appear when **Airlines** is set to **SkyTeam**. Seasonal routes,
+such as Iceland in winter, appear only for dates when they operate. Asia and Australia may also
+be drawn on the copy of the world west of the Pacific, because the map centers on your home
+airport.
+
 **"No Delta destinations found for these dates."** The dates may be too far out, or too soon, for
 Google to have fares. Try dates two to ten months ahead.
 
@@ -230,8 +247,8 @@ Browser (Leaflet map) ⇄ local FastAPI server ⇄ SerpApi ⇄ Google Travel Exp
                         cache.sqlite3 (cached results, log of searches, confirmed Main fares)
 ```
 
-- **The map** uses SerpApi's *Google Travel Explore* engine: one call per region, filtered to
-  Delta.
+- **The map** uses SerpApi's *Google Travel Explore* engine: one call per region (plus one per
+  smaller area with Deep search), filtered to Delta or SkyTeam.
 - **City details** use the *Google Flights* engine. Returns use the outbound flight's
   `departure_token`. Fare names (Main Basic, Main Classic…) use the trip's `booking_token`.
 
