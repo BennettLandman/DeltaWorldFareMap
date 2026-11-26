@@ -1,0 +1,17 @@
+[project]
+name = "deltamap"
+version = "0.1.0"
+description = "Local map of Delta-reachable cities priced at their lowest round-trip fare"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "airportsdata>=20240316",
+]
+
+[tool.uv]
+package = false

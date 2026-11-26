@@ -1,0 +1,24 @@
+# --- Secrets: never commit these ---
+# SerpApi key, in any of the places the app reads it from
+serpapi.key
+serpai.key
+*.key
+.env
+.env.*
+!.env.example
+# SSH / deploy keys, in case one is ever copied into the project
+id_rsa*
+id_ed25519*
+*.pem
+
+# --- Local data ---
+cache.sqlite3
+cache.sqlite3-*
+spike_out/
+
+# --- Python / tooling ---
+.venv/
+__pycache__/
+*.pyc
+.claude/
+.DS_Store
